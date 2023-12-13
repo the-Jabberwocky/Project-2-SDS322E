@@ -1,0 +1,315 @@
+---
+title: "Project 2"
+output: html_document
+date: "2023-11-14"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Modeling Ambient Air Pollution
+## Introduction  
+
+This paper seeks to predict the ambient amount of air pollution, measured in micrograms per cubic meter (µg/m$^3$). To create this model, several approaches will be created, tested, and compared to determine the model that best reduces root mean squared error (RMSE), which is a measure of model accuracy.
+
+### Modeling Approaches
+
+A regression model must be used to receive a continuous output. Some relevant regression models include:
+
+- **Simple Linear Regression**
+
+- **Linear regression with penalization via glmnet**
+  Incorporates both ridge regression and lasso regression penalty methods
+  Accounts for multi-colinearity in predictors, which can bulk up simple linear models
+  
+- **K-nearest neighbors regression**  
+  Predicts based on similarity to known instances  
+  
+- **Mixed Effect Model**   
+  Incorporates both fixed and random effects
+  
+- **Random Forest Regression**
+   Lots of decision trees
+   
+### Exploratory Analysis
+
+Understanding your data is incredibly important to properly process and prepare data for modeling.
+
+#### Read In Data
+
+```{r read in data, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(tidymodels)
+library(glmnet)
+dat <- read_csv("https://github.com/rdpeng/stat322E_public/raw/main/data/pm25_data.csv.gz")
+```
+
+#### Split train and test
+
+The test and training data must be split before any analysis or processing is done, to ensure the test set remains separate and does not effect
+
+• Any exploratory analysis that was done with the data (e.g. correlations, scatterplots,
+boxplots, histograms, etc.) in order to learn about relationships in the data;  
+
+### Choosing predictor variables  
+• An explanation of how the predictor variables were chosen for your model;
+3
+#### Investigate Data  
+
+```{r geographic visualization}
+# Start to understand the data
+skimr::skim(dat)
+# import packages for geographic visualization
+library(sf)
+library(maps)
+library(mapdata)
+
+# create plot showing locations of measurement stations
+map_data("state") %>% 
+  ggplot(aes(x = long, y = lat))+
+  geom_polygon(aes(group = group), fill = "white", color = "grey75") +
+  geom_point(data = dat, aes(x=lon,y=lat),size = 1)+ 
+  coord_fixed(1.3)+
+  coord_quickmap()
+```
+
+#### Data Pre-processing and feature selection
+
+```{r examine correlations, warning=FALSE,message=FALSE}
+library(corrplot)
+library(PerformanceAnalytics)
+
+# create correlation plot of all variables
+# we are only interested in the correlation with value, but it's still interesting
+# it also gives insight into colinearity between variables
+dat %>% 
+  select(where(is.numeric)) %>% 
+  cor() %>% 
+  corrplot(type = "upper", 
+         tl.col = "black",tl.cex = .4)
+
+# fit a basic linear regression model
+fit<- lm(value~., data = dat)
+# look at the results
+summary(fit)
+
+```
+
+By looking at the coefficients of each predictor for a basic linear regression, we can begin to understand which predictors have the greatest effect on the outcome (value). Later, during feature selection, I will include only predictors with a p-value less than .05.
+
+
+```{r scatterplots}
+# Create scatterplots of predictors vs pm2.5 value
+dat <- pivot_longer(2:44,names_to = "Predictor",values_to = "measure") %>% 
+  filter(Predictor %in% c("CMAQ","aod","log_nei_2008_pm10_sum_25000","imp_a15000,zcta_pop","log_nei_2008_pm25_sum_25000","zcta_area","zcta_pop","urc2013","log_pri_length_15000")) %>% 
+  ggplot(aes(x=measure,y=value))+
+  geom_point() +
+  geom_smooth()+
+  theme(aspect.ratio = 1/2)+
+  facet_wrap(vars(Predictor), scale = "free_x")
+  
+```
+
+Correlations are useful, but do not show interactions or non-linear relationships. Pm2.5 values may have a non-linear relationship with certain predictors, which we can discover by examining their scatterplots. These relationships are important to know, as you can account for them in the modeling process by using natural splines. Interactions (situations where the effect of two variables is more than the sum of their parts) are a bit more difficult to discover, especially without expertise in the subject to identify areas of interest
+
+### RMSE Expectation
+• Your expectation for what the RMSE performance of your model should be
+
+mixed effect model
+decison tree
+Temporal Hierarchical Forecasting
+knn regression
+random forest
+
+##Wrangling
+This section should include any wrangling or transformations of the data that were done
+prior to modeling. Code should be included throughout and a textual explanation should be
+included to explain any wrangling operations
+### Wrangling
+```{r wrangling}
+# Bc fips and zcta, and id are identification codes, not numerical rankings
+# Zip, state, lat/long, zcta, are all forms of location data. Let's only do lat/long for this model
+clean_train <-train %>% 
+  select(-c(id,fips,zcta,state,county,city)) 
+```
+
+
+##Results
+Describe the development of your 3 prediction models (or 4 models, if working in a group) and
+how you compared their performance. Be sure to describe the splitting of training and testing
+datasets and the use of cross-validation to evaluate prediction metrics. Remember that the
+primary metric for your prediction model will be root mean-squared error (RMSE).
+```{r Split train and test}
+# Make this example reproducible by setting a seed
+set.seed(4321)
+
+# Split data into train and test sets
+dat_split <- initial_split(dat, prop = 0.9)
+train <- training(dat_split)
+test <- testing(dat_split)
+```
+
+```{r message=FALSE, warning=FALSE}
+## Make this example reproducible by setting a seed
+set.seed(321)
+
+## Create 10 folds from the dataset
+folds <- vfold_cv(clean_train, v = 8)
+
+# create recipe defining predictor-outcome relationship - all predictors
+basic_rec <- clean_train %>% 
+  recipe(value ~.) %>% 
+  step_normalize()
+
+# create recipe using pre-picked predictors
+curated_rec <- clean_train %>% 
+  recipe(value~ CMAQ+aod+log_nei_2008_pm10_sum_25000+imp_a15000+zcta_pop+log_nei_2008_pm25_sum_25000) %>% 
+  step_normalize()
+
+# create recipe using pre-picked predictors - without CMAQ and aod
+reduced_curated_rec <- clean_train %>% 
+  recipe(value~ CMAQ+aod+log_nei_2008_pm10_sum_25000+imp_a15000+zcta_pop+log_nei_2008_pm25_sum_25000) %>% 
+  step_normalize()
+
+# create recipe  - all predictors except CMAQ and aod
+reduced_rec <- clean_train %>% 
+  recipe(value ~.) %>% 
+  step_rm("CMAQ"|"aod") %>% 
+  step_normalize()
+
+#we don't want colinearity
+## Create the model for simple linear regression
+linear_model <- linear_reg() %>% 
+    set_engine("lm") %>% 
+    set_mode("regression")
+
+# create general linear model that allows tuning
+pen_linear_model <- 
+  # declare type of model, allow the tuning of penalty
+  linear_reg(penalty = tune(), mixture = tune()) %>% 
+  # set engine to glmnet
+  set_engine("glmnet")
+
+## Create knn model, allowing for tuning
+knn_model <- 
+   nearest_neighbor(neighbors = tune(), weight_func = tune()) %>% 
+    set_engine("kknn") %>% 
+    set_mode("regression")
+
+# Put all recipies and models into a workflow
+all_workflows <- 
+  workflow_set(
+    list(basic = basic_rec,
+         withoutCMAQaod = reduced_rec,
+         curated = curated_rec,
+         curated_withoutCMAQaod = reduced_curated_rec),
+    list(linear =linear_model,
+         penalized_linear = pen_linear_model,
+         knn = knn_model)
+  )
+
+set.seed(123)
+# Tune parameters
+tune_workflows <- 
+   all_workflows %>% 
+   workflow_map("tune_grid", resamples = folds, grid = 8,verbose = TRUE)
+
+# Show the results (rmse values) of different tuning parameters
+rank_results(tune_workflows, rank_metric = "rmse")
+autoplot(tune_workflows)
+
+#Take the best tuning parameter for basic_knn (the best model when results were ranked)
+best_knn <- tune_workflows %>% 
+  extract_workflow_set_result(id = "basic_knn") %>%
+  select_best(metric = "rmse")
+
+```
+
+## The Big Reveal
+
+### Use the model to predict on the test set
+
+```{r}
+# fit the chosen model on the train set
+final_result <- 
+  all_workflows %>% 
+  extract_workflow("basic_knn") %>% 
+  finalize_workflow(best_knn) %>% 
+  fit(data = clean_train)
+
+# prep and bake the testing data
+prep_test <- basic_rec %>% 
+    prep(test) %>% 
+    bake(new_data = test)
+
+# predict pm2.5 values based on chosen model
+dat_test_res <- predict(final_result,new_data = prep_test)
+
+# add model predictions to the test data
+dat_test_res<- bind_cols(dat_test_res, test)
+
+```
+
+Your results should include at least one visualization demonstrating the prediction performance
+of your models. You should also include a table summarizing the prediction metrics (including
+RMSE) across all of the models that you tried
+### Visualize and Evaluate
+
+```{r}
+# Plot predicted vs actual values
+dat_test_res %>% 
+  ggplot(aes(x = value, y = .pred)) +
+  # create the line if predicted and actual values were the exact same
+  geom_abline(lty = 2) +
+  geom_point()+
+  labs(x = "observed pm2.5 value", y = "predicted pm2.5 value")
+
+# Calculate rmse for test data
+dat_test_res %>% 
+  metrics(value,.pred)
+```
+
+## Primary Questions
+As part of your final report, you must answer the following questions using the model that you
+chose as your “best and final” model.
+1. Based on test set performance, at what locations does your model give predictions that
+are closest and furthest from the observed values? What do you hypothesize are the
+reasons for the good or bad performance at these locations?
+2. What variables might predict where your model performs well or not? For example, are
+their regions of the country where the model does better or worse? Are there variables
+that are not included in this dataset that you think might improve the model performance
+if they were included in your model?
+3. There is interest in developing more cost-effect approaches to monitoring air pollution
+on the ground. Two candidates for replacing the use of ground-based monitors are
+numerical models like CMAQ and satellite-based observations such as AOD. How well do
+CMAQ and AOD predict ground-level concentrations of PM2.5? How does the prediction
+performance of your model change when CMAQ or aod are included (or not included) in
+the model?
+4. The dataset here did not include data from Alaska or Hawaii. Do you think your model
+will perform well or not in those two states? Explain your reasoning.
+## Discussion
+Putting it all together, what did you learn from your data and your model performance?
+• Answer the Primary Questions posed above, citing any supporting statistics, visualiza-
+tions, or results from the data or your models.
+• Reflect on the process of conducting this project. What was challenging, what have you
+learned from the process itself?
+• Reflect on the performance of your final prediction model. Did it perform as well as you
+originally expected? If not, why do you think it didn’t perform as well?
+• Include acknowledgements for any help received. If a group project, report the contribu-
+tion of each member (i.e. who did what?).
+4
+## Formatting
+Create the report using R Markdown, with headers for each section; include comments to
+the R code; include references (datasets, context). The final report should be no more than
+20 pages (the number of pages can vary greatly depending on the cleaning process). It is
+extremely important that you select pages when submitting on Gradescope.
+Appendix: Predictor Variables Summary
+Variable Details
+id Monitor number – the county number is indicated
+before the decimal – the monitor number is
+indicated after the decimal Example: 1073.0023 is
+Jefferson county (1073) and .0023 one of 8 monitors
+fips Federal information processing standard number
+for the county where the monitor is located – 5
+digit id code for counties (zero is often the first
